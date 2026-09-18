@@ -1,1 +1,50 @@
 @import "tailwindcss";
+
+:root {
+  --bg-primary: #0f0f0f;
+  --bg-secondary: #1a1a1a;
+  --bg-tertiary: #252525;
+  --border-color: #2a2a2a;
+  --text-primary: #ffffff;
+  --text-secondary: #aaaaaa;
+  --text-muted: #666666;
+  --accent: #6366f1;
+  --accent-blue: #3b82f6;
+}
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+button {
+  font-family: inherit;
+}
+
+button:hover {
+  opacity: 0.9;
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+/* Delete button hover on project cards */
+div:hover .delete-btn {
+  opacity: 1 !important;
+}
+
+/* Selection styles */
+::selection {
+  background: rgba(99, 102, 241, 0.3);
+}
+
+/* Focus styles */
+input:focus, select:focus, textarea:focus {
+  border-color: var(--accent-blue) !important;
+}
+
+/* Smooth transitions for panels */
+.panel-transition {
+  transition: width 0.2s ease;
+}
