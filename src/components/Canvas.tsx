@@ -1,0 +1,1078 @@
+import React, { useRef, useEffect, useCallback, useState } from 'react';
+import { useEditorStore, createDefaultElement } from '../store';
+import type { DesignElement } from '../types';
+import { AlignmentBar } from './AlignmentBar';
+import { SnapGuides, calculateSnapGuides } from './SnapGuides';
+
+export const Canvas: React.FC = () => {
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const {
+    elements, rootIds, selectedIds, setSelectedIds, clearSelection, addToSelection,
+    canvasTransform, setCanvasTransform, activeTool, setActiveTool,
+    updateElement, addElement, deleteElement, viewportMode,
+    pushHistory, duplicateSelection,
+  } = useEditorStore();
+
+  const [isPanning, setIsPanning] = useState(false);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [drawStart, setDrawStart] = useState({ x: 0, y: 0 });
+  const [drawCurrent, setDrawCurrent] = useState({ x: 0, y: 0 });
+  const [dragState, setDragState] = useState<{ id: string; startX: number; startY: number; elX: number; elY: number } | null>(null);
+  const [resizeState, setResizeState] = useState<{ id: string; handle: string; startX: number; startY: number; origX: number; origY: number; origW: number; origH: number } | null>(null);
+  const [selectionBox, setSelectionBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [snapGuides, setSnapGuides] = useState<any[]>([]);
+  
+  // Drill-down state: which frame are we "inside" of
+  const [drillFrameId, setDrillFrameId] = useState<string | null>(null);
+  
+  // Track if we just clicked (to differentiate click from drag)
+  const [clickStartTime, setClickStartTime] = useState(0);
+  const [clickStartPos, setClickStartPos] = useState({ x: 0, y: 0 });
+
+  const viewportWidths = { desktop: 1440, tablet: 768, mobile: 390 };
+  const currentWidth = viewportWidths[viewportMode];
+  
+  // Get visible elements based on drill-down state
+  const getVisibleElements = useCallback(() => {
+    if (!drillFrameId) {
+      // Not drilled in, show all root elements
+      return rootIds;
+    }
+    // Drilled into a frame, show its children
+    const frame = elements[drillFrameId];
+    if (!frame) return rootIds;
+    return frame.children;
+  }, [drillFrameId, rootIds, elements]);
+  
+  // Get breadcrumb path for current drill-down
+  const getDrillBreadcrumb = useCallback(() => {
+    if (!drillFrameId) return [];
+    const path: { id: string; name: string }[] = [];
+    let currentId: string | null = drillFrameId;
+    while (currentId && elements[currentId]) {
+      path.unshift({ id: currentId, name: elements[currentId].name });
+      currentId = elements[currentId].parentId;
+    }
+    return path;
+  }, [drillFrameId, elements]);
+
+  // Center view on load - start at 100% zoom
+  useEffect(() => {
+    if (rootIds.length > 0) {
+      const container = canvasRef.current;
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        // Start at 100% zoom, centered on the first frame
+        const firstFrame = elements[rootIds[0]];
+        const frameX = firstFrame?.x || 0;
+        const frameY = firstFrame?.y || 0;
+        
+        setCanvasTransform({
+          x: rect.width / 2 - frameX - (firstFrame?.width || 1440) / 2,
+          y: rect.height / 2 - frameY - (firstFrame?.height || 900) / 2,
+          scale: 1, // Start at 100% zoom
+        });
+      }
+    }
+  }, [rootIds.length > 0 ? 'loaded' : 'empty']);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (editingTextId) return;
+      if (e.code === 'Space') { e.preventDefault(); setSpaceHeld(true); }
+      if (e.key === 'v') setActiveTool('select');
+      if (e.key === 'f') setActiveTool('frame');
+      if (e.key === 'r') setActiveTool('rectangle');
+      if (e.key === 'o') setActiveTool('ellipse');
+      if (e.key === 'l') setActiveTool('line');
+      if (e.key === 't') setActiveTool('text');
+      if (e.key === 'h') setActiveTool('hand');
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        selectedIds.forEach((id) => deleteElement(id));
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) useEditorStore.getState().redo();
+        else useEditorStore.getState().undo();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'c') useEditorStore.getState().copySelection();
+      if ((e.metaKey || e.ctrlKey) && e.key === 'v') { e.preventDefault(); useEditorStore.getState().paste(); }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'd') { e.preventDefault(); duplicateSelection(); }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'g') {
+        e.preventDefault();
+        if (e.shiftKey) useEditorStore.getState().ungroupSelection();
+        else useEditorStore.getState().groupSelection();
+      }
+      if (e.key === 'Escape') {
+        if (editingTextId) {
+          setEditingTextId(null);
+        } else if (selectedIds.length > 0) {
+          // If we have selections, clear them
+          clearSelection();
+        } else if (drillFrameId) {
+          // If we're drilled into a frame, go back up
+          setDrillFrameId(null);
+        }
+      }
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') setSpaceHeld(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [selectedIds, editingTextId]);
+
+  // Wheel zoom - zoom to cursor position
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      
+      const delta = e.deltaY > 0 ? 0.9 : 1.1;
+      const { canvasTransform: ct } = useEditorStore.getState();
+      const newScale = Math.min(Math.max(ct.scale * delta, 0.1), 5);
+      
+      // Calculate cursor position relative to canvas
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      
+      // Calculate new position to zoom towards cursor
+      const scaleChange = newScale / ct.scale;
+      const newX = mouseX - (mouseX - ct.x) * scaleChange;
+      const newY = mouseY - (mouseY - ct.y) * scaleChange;
+      
+      setCanvasTransform({ x: newX, y: newY, scale: newScale });
+    } else {
+      const { canvasTransform: ct } = useEditorStore.getState();
+      setCanvasTransform({ ...ct, x: ct.x - e.deltaX, y: ct.y - e.deltaY });
+    }
+  }, []);
+
+  const screenToCanvas = useCallback((sx: number, sy: number) => {
+    const { canvasTransform: ct } = useEditorStore.getState();
+    return {
+      x: (sx - ct.x) / ct.scale,
+      y: (sy - ct.y) / ct.scale,
+    };
+  }, []);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+
+    if (activeTool === 'hand' || spaceHeld) {
+      setIsPanning(true);
+      setDrawStart({ x: e.clientX, y: e.clientY });
+      return;
+    }
+
+    if (activeTool === 'frame' || activeTool === 'rectangle' || activeTool === 'ellipse' || activeTool === 'text') {
+      const pos = screenToCanvas(sx, sy);
+      setIsDrawing(true);
+      setDrawStart(pos);
+      setDrawCurrent(pos);
+      return;
+    }
+
+    // Select tool - check if clicking on empty space
+    const target = e.target as HTMLElement;
+    if (target === canvasRef.current || target.classList.contains('canvas-inner')) {
+      if (!e.shiftKey) clearSelection();
+      const pos = screenToCanvas(sx, sy);
+      setSelectionBox({ x: pos.x, y: pos.y, w: 0, h: 0 });
+      setDrawStart(pos);
+    }
+  }, [activeTool, spaceHeld, screenToCanvas]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    if (isPanning) {
+      const dx = e.clientX - drawStart.x;
+      const dy = e.clientY - drawStart.y;
+      const { canvasTransform: ct } = useEditorStore.getState();
+      setCanvasTransform({ ...ct, x: ct.x + dx, y: ct.y + dy });
+      setDrawStart({ x: e.clientX, y: e.clientY });
+      return;
+    }
+
+    if (isDrawing) {
+      const pos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
+      setDrawCurrent(pos);
+      return;
+    }
+
+    if (dragState) {
+      const pos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
+      const dx = pos.x - dragState.startX;
+      const dy = pos.y - dragState.startY;
+      
+      const newX = dragState.elX + dx;
+      const newY = dragState.elY + dy;
+      const el = elements[dragState.id];
+      
+      if (el) {
+        // For elements with parents, we need to account for parent position
+        let finalX = newX;
+        let finalY = newY;
+        
+        // If this element has a parent, calculate relative position
+        if (el.parentId && elements[el.parentId]) {
+          const parent = elements[el.parentId];
+          // For relative positioned children, we need to adjust
+          if (el.position === 'relative') {
+            // Keep the relative positioning but update the offset
+            finalX = newX - parent.x;
+            finalY = newY - parent.y;
+          }
+        }
+        
+        // Calculate snap guides (only for root-level elements to avoid confusion)
+        if (!el.parentId) {
+          const otherElements = Object.values(elements).filter((e) => e.id !== dragState.id && e.visible && !e.parentId);
+          const { guides, snappedX, snappedY } = calculateSnapGuides(
+            { x: newX, y: newY, width: el.width, height: el.height },
+            otherElements
+          );
+          
+          setSnapGuides(guides);
+          finalX = snappedX;
+          finalY = snappedY;
+        } else {
+          setSnapGuides([]);
+        }
+        
+        updateElement(dragState.id, { x: finalX, y: finalY });
+      }
+      return;
+    }
+
+    if (resizeState) {
+      const pos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
+      const dx = pos.x - resizeState.startX;
+      const dy = pos.y - resizeState.startY;
+      let { origX, origY, origW, origH } = resizeState;
+      let newX = origX, newY = origY, newW = origW, newH = origH;
+
+      if (resizeState.handle.includes('e')) { newW = Math.max(10, origW + dx); }
+      if (resizeState.handle.includes('w')) { newW = Math.max(10, origW - dx); newX = origX + dx; }
+      if (resizeState.handle.includes('s')) { newH = Math.max(10, origH + dy); }
+      if (resizeState.handle.includes('n')) { newH = Math.max(10, origH - dy); newY = origY + dy; }
+
+      updateElement(resizeState.id, { x: newX, y: newY, width: newW, height: newH });
+      return;
+    }
+
+    if (selectionBox) {
+      const pos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
+      setSelectionBox({
+        x: Math.min(drawStart.x, pos.x),
+        y: Math.min(drawStart.y, pos.y),
+        w: Math.abs(pos.x - drawStart.x),
+        h: Math.abs(pos.y - drawStart.y),
+      });
+    }
+  }, [isPanning, isDrawing, dragState, resizeState, selectionBox, drawStart, screenToCanvas]);
+
+  // Drag and drop image support
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files);
+    const imageFiles = files.filter((f) => f.type.startsWith('image/'));
+    
+    if (imageFiles.length === 0) return;
+
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const pos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
+
+    imageFiles.forEach((file, index) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const src = event.target?.result as string;
+        const el = createDefaultElement('image', pos.x + index * 20, pos.y + index * 20);
+        el.src = src;
+        el.name = file.name;
+        el.width = 200;
+        el.height = 150;
+        addElement(el);
+        setSelectedIds([el.id]);
+      };
+      reader.readAsDataURL(file);
+    });
+  }, [screenToCanvas, addElement, setSelectedIds]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+  }, []);
+
+  const handleMouseUp = useCallback(() => {
+    if (isDrawing) {
+      const x = Math.min(drawStart.x, drawCurrent.x);
+      const y = Math.min(drawStart.y, drawCurrent.y);
+      const w = Math.abs(drawCurrent.x - drawStart.x);
+      const h = Math.abs(drawCurrent.y - drawStart.y);
+
+      if (w > 5 || h > 5 || activeTool === 'text') {
+        const type = activeTool === 'frame' ? 'frame' : activeTool === 'text' ? 'text' : activeTool === 'ellipse' ? 'ellipse' : 'rectangle';
+        const el = createDefaultElement(type as any, x || drawStart.x, y || drawStart.y);
+        if (w > 5) el.width = w;
+        if (h > 5) el.height = h;
+        if (type === 'text') { el.content = 'Text'; el.width = 200; el.height = 40; }
+        addElement(el);
+        setSelectedIds([el.id]);
+      }
+      setIsDrawing(false);
+      setActiveTool('select');
+      return;
+    }
+
+    if (dragState) {
+      pushHistory();
+      setDragState(null);
+      setSnapGuides([]);
+    }
+    if (resizeState) {
+      pushHistory();
+      setResizeState(null);
+    }
+    if (selectionBox) {
+      // Select elements within box
+      const box = selectionBox;
+      const ids = Object.values(elements).filter((el) => {
+        return el.x >= box.x && el.y >= box.y &&
+          el.x + el.width <= box.x + box.w &&
+          el.y + el.height <= box.y + box.h;
+      }).map((el) => el.id);
+      if (ids.length > 0) setSelectedIds(ids);
+      setSelectionBox(null);
+    }
+    setIsPanning(false);
+  }, [isDrawing, drawStart, drawCurrent, activeTool, dragState, resizeState, selectionBox, elements]);
+
+  const handleElementMouseDown = useCallback((e: React.MouseEvent, id: string) => {
+    if (activeTool !== 'select') return;
+    e.stopPropagation();
+    e.preventDefault();
+    
+    const el = elements[id];
+    if (!el || el.locked) return;
+
+    // Track click start for click vs drag detection
+    setClickStartTime(Date.now());
+    setClickStartPos({ x: e.clientX, y: e.clientY });
+
+    // If clicking on an already-selected frame with children, prepare to drill down on mouse up
+    const isAlreadySelected = selectedIds.includes(id);
+    const isFrameWithChildren = el.type === 'frame' && el.children.length > 0;
+    
+    // Select the element
+    if (e.shiftKey) {
+      if (selectedIds.includes(id)) {
+        setSelectedIds(selectedIds.filter((s) => s !== id));
+      } else {
+        addToSelection(id);
+      }
+    } else if (!selectedIds.includes(id)) {
+      setSelectedIds([id]);
+    }
+
+    // Start drag for any element (but not if it's an already-selected frame that we might drill into)
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const pos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
+    
+    // Allow dragging of any non-locked element
+    setDragState({ id, startX: pos.x, startY: pos.y, elX: el.x, elY: el.y });
+  }, [activeTool, elements, selectedIds, screenToCanvas, addToSelection, setSelectedIds]);
+
+  const handleElementDoubleClick = useCallback((e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    const el = elements[id];
+    if (!el) return;
+    
+    // If it's a text element, enter edit mode
+    if (el.type === 'text' || el.type === 'heading' || el.type === 'paragraph') {
+      setEditingTextId(id);
+    }
+    // If it's a frame with children, drill down into it
+    else if ((el.type === 'frame' || el.children.length > 0) && el.children.length > 0) {
+      setDrillFrameId(id);
+      setSelectedIds([]);
+    }
+  }, [elements]);
+
+  const handleResizeMouseDown = useCallback((e: React.MouseEvent, id: string, handle: string) => {
+    e.stopPropagation();
+    const el = elements[id];
+    if (!el) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const pos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
+    setResizeState({
+      id, handle,
+      startX: pos.x, startY: pos.y,
+      origX: el.x, origY: el.y,
+      origW: el.width, origH: el.height,
+    });
+  }, [elements, screenToCanvas]);
+
+  const renderElement = (el: DesignElement, depth: number = 0): React.ReactNode => {
+    if (!el.visible) return null;
+
+    const isSelected = selectedIds.includes(el.id);
+    const isText = el.type === 'text' || el.type === 'heading' || el.type === 'paragraph';
+    const isEditing = editingTextId === el.id;
+    const isFrame = el.type === 'frame';
+
+    const isChild = el.parentId !== null;
+    const isAbsolute = el.position === 'absolute';
+
+    const style: React.CSSProperties = {
+      position: isAbsolute ? 'absolute' : 'relative',
+      left: isAbsolute ? el.x : undefined,
+      top: isAbsolute ? el.y : undefined,
+      width: el.width > 0 ? (isChild && !isAbsolute ? '100%' : el.width) : 'auto',
+      height: el.height === 0 ? 'auto' : el.height,
+      transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
+      opacity: el.opacity,
+      background: el.background || 'transparent',
+      border: el.border.width > 0 ? `${el.border.width}px ${el.border.style} ${el.border.color}` : (isFrame && !isChild ? '1px solid #333' : 'none'),
+      borderRadius: el.borderRadius,
+      boxShadow: el.shadow 
+        ? `${el.shadow.x}px ${el.shadow.y}px ${el.shadow.blur}px ${el.shadow.spread}px ${el.shadow.color}` 
+        : (isFrame && !isChild ? '0 4px 20px rgba(0,0,0,0.3)' : 'none'),
+      padding: `${el.padding.top}px ${el.padding.right}px ${el.padding.bottom}px ${el.padding.left}px`,
+      margin: `${el.margin.top}px ${el.margin.right}px ${el.margin.bottom}px ${el.margin.left}px`,
+      overflow: el.overflow,
+      zIndex: el.zIndex + depth,
+      cursor: activeTool === 'select' ? (el.locked ? 'not-allowed' : 'move') : 'default',
+      pointerEvents: 'all', // Ensure all elements can receive clicks
+      transition: 'box-shadow 0.15s ease, border-color 0.15s ease',
+    };
+    
+    // Add hover highlight for frames
+    if (isFrame && hoveredId === el.id && !isSelected) {
+      style.borderColor = '#3b82f6';
+      style.boxShadow = '0 4px 20px rgba(59, 130, 246, 0.15)';
+    }
+
+    // Apply flex layout
+    if (el.layout.display === 'flex') {
+      style.display = 'flex';
+      style.flexDirection = el.layout.flexDirection;
+      style.justifyContent = el.layout.justifyContent;
+      style.alignItems = el.layout.alignItems;
+      if (el.layout.gap > 0) style.gap = el.layout.gap;
+    } else if (el.layout.display === 'grid') {
+      style.display = 'grid';
+      if (el.layout.gridColumns) style.gridTemplateColumns = el.layout.gridColumns;
+      if (el.layout.gridRows) style.gridTemplateRows = el.layout.gridRows;
+      if (el.layout.gap > 0) style.gap = el.layout.gap;
+    } else if (el.layout.display === 'none') {
+      style.display = 'none';
+    }
+
+    if (isText && el.typography) {
+      style.fontFamily = el.typography.fontFamily;
+      style.fontSize = el.typography.fontSize;
+      style.fontWeight = el.typography.fontWeight;
+      style.lineHeight = el.typography.lineHeight;
+      style.letterSpacing = el.typography.letterSpacing;
+      style.textAlign = el.typography.textAlign;
+      style.textTransform = el.typography.textTransform;
+      style.color = el.typography.color;
+    }
+
+    if (el.type === 'ellipse') {
+      style.borderRadius = '50%';
+    }
+
+    if (el.type === 'image' && el.src) {
+      return (
+        <div
+          key={el.id}
+          data-element-id={el.id}
+          style={style}
+          onMouseDown={(e) => handleElementMouseDown(e, el.id)}
+          onDoubleClick={(e) => handleElementDoubleClick(e, el.id)}
+          onMouseEnter={() => setHoveredId(el.id)}
+          onMouseLeave={() => setHoveredId(null)}
+        >
+          <img src={el.src} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: el.borderRadius }} />
+        </div>
+      );
+    }
+
+    const children = el.children.map((childId) => {
+      const child = elements[childId];
+      if (child) return renderElement(child, depth + 1);
+      return null;
+    }).filter(Boolean);
+
+    return (
+      <div
+        key={el.id}
+        data-element-id={el.id}
+        style={style}
+        onMouseDown={(e) => handleElementMouseDown(e, el.id)}
+        onDoubleClick={(e) => handleElementDoubleClick(e, el.id)}
+        onMouseEnter={() => setHoveredId(el.id)}
+        onMouseLeave={() => setHoveredId(null)}
+      >
+        {/* Frame label */}
+        {isFrame && (isSelected || hoveredId === el.id) && (
+          <div style={{
+            position: 'absolute',
+            top: -22,
+            left: 0,
+            fontSize: 11,
+            color: isSelected ? '#3b82f6' : '#888',
+            fontWeight: isSelected ? 600 : 400,
+            whiteSpace: 'nowrap',
+            pointerEvents: 'none',
+            fontFamily: 'Inter, sans-serif',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+          }}>
+            <span>{el.name}</span>
+            {el.children.length > 0 && (
+              <>
+                <span style={{ fontSize: 9, color: '#555', fontWeight: 400 }}>
+                  {el.children.length} {el.children.length === 1 ? 'element' : 'elements'}
+                </span>
+                {isSelected && (
+                  <span style={{ fontSize: 9, color: '#666', fontWeight: 400, fontStyle: 'italic' }}>
+                    double-click to enter
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+        )}
+        {isEditing ? (
+          <textarea
+            autoFocus
+            value={el.content}
+            onChange={(e) => updateElement(el.id, { content: e.target.value })}
+            onBlur={() => { setEditingTextId(null); pushHistory(); }}
+            onKeyDown={(e) => { if (e.key === 'Escape') { setEditingTextId(null); pushHistory(); } }}
+            style={{
+              width: '100%', height: '100%', background: 'transparent', border: 'none', outline: 'none',
+              resize: 'none', fontFamily: style.fontFamily, fontSize: style.fontSize,
+              fontWeight: style.fontWeight, lineHeight: style.lineHeight,
+              color: style.color, textAlign: style.textAlign,
+            }}
+          />
+        ) : (
+          <>
+            {el.content && <span style={{ whiteSpace: 'pre-wrap', pointerEvents: 'none' }}>{el.content}</span>}
+            {children}
+          </>
+        )}
+      </div>
+    );
+  };
+
+  const renderSelectionOverlay = () => {
+    // Show hover outline
+    const overlays: React.ReactNode[] = [];
+    if (hoveredId && !selectedIds.includes(hoveredId)) {
+      const el = elements[hoveredId];
+      if (el && el.visible) {
+        const typeLabels: Record<string, string> = {
+          frame: 'Frame', rectangle: 'Rectangle', ellipse: 'Ellipse',
+          text: 'Text', heading: 'Heading', paragraph: 'Paragraph',
+          image: 'Image', button: 'Button', group: 'Group',
+        };
+        overlays.push(
+          <div
+            key={`hover-${hoveredId}`}
+            style={{
+              position: 'absolute',
+              left: el.x - 1,
+              top: el.y - 1,
+              width: el.width + 2,
+              height: el.height + 2,
+              border: '1.5px solid rgba(59, 130, 246, 0.6)',
+              pointerEvents: 'none',
+              zIndex: 99998,
+            }}
+          >
+            {/* Hover label */}
+            <div style={{
+              position: 'absolute',
+              top: -18,
+              left: 0,
+              background: 'rgba(59, 130, 246, 0.8)',
+              color: '#fff',
+              fontSize: 9,
+              fontWeight: 600,
+              padding: '1px 5px',
+              borderRadius: '2px 2px 0 0',
+              whiteSpace: 'nowrap',
+              fontFamily: 'Inter, sans-serif',
+            }}>
+              {typeLabels[el.type] || el.type}
+            </div>
+          </div>
+        );
+      }
+    }
+
+    // Show selection outlines
+    selectedIds.forEach((id) => {
+      const el = elements[id];
+      if (!el) return;
+      
+      // Element type icon/label
+      const typeLabels: Record<string, string> = {
+        frame: 'Frame',
+        rectangle: 'Rectangle',
+        ellipse: 'Ellipse',
+        text: 'Text',
+        heading: 'Heading',
+        paragraph: 'Paragraph',
+        image: 'Image',
+        button: 'Button',
+        group: 'Group',
+      };
+      
+      overlays.push(
+        <div
+          key={`sel-${id}`}
+          style={{
+            position: 'absolute',
+            left: el.x - 1,
+            top: el.y - 1,
+            width: el.width + 2,
+            height: el.height + 2,
+            border: '2px solid #3b82f6',
+            pointerEvents: 'none',
+            zIndex: 99999,
+          }}
+        >
+          {/* Element type label */}
+          <div style={{
+            position: 'absolute',
+            top: -20,
+            left: 0,
+            background: '#3b82f6',
+            color: '#fff',
+            fontSize: 10,
+            fontWeight: 600,
+            padding: '2px 6px',
+            borderRadius: '3px 3px 0 0',
+            whiteSpace: 'nowrap',
+            fontFamily: 'Inter, sans-serif',
+          }}>
+            {typeLabels[el.type] || el.type}
+          </div>
+          
+          {/* Resize handles */}
+          {['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'].map((handle) => {
+            const positions: Record<string, React.CSSProperties> = {
+              nw: { left: -5, top: -5 },
+              ne: { right: -5, top: -5 },
+              sw: { left: -5, bottom: -5 },
+              se: { right: -5, bottom: -5 },
+              n: { left: '50%', top: -5, transform: 'translateX(-50%)' },
+              s: { left: '50%', bottom: -5, transform: 'translateX(-50%)' },
+              e: { right: -5, top: '50%', transform: 'translateY(-50%)' },
+              w: { left: -5, top: '50%', transform: 'translateY(-50%)' },
+            };
+            const cursors: Record<string, string> = {
+              nw: 'nw-resize', ne: 'ne-resize', sw: 'sw-resize', se: 'se-resize',
+              n: 'n-resize', s: 's-resize', e: 'e-resize', w: 'w-resize',
+            };
+            return (
+              <div
+                key={handle}
+                onMouseDown={(e) => { e.stopPropagation(); handleResizeMouseDown(e, id, handle); }}
+                style={{
+                  position: 'absolute',
+                  width: 10,
+                  height: 10,
+                  background: '#ffffff',
+                  border: '2px solid #3b82f6',
+                  borderRadius: 2,
+                  cursor: cursors[handle],
+                  pointerEvents: 'all',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  ...positions[handle],
+                }}
+              />
+            );
+          })}
+          
+          {/* Dimensions label */}
+          <div style={{
+            position: 'absolute',
+            bottom: -22,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: '#3b82f6',
+            color: '#fff',
+            fontSize: 10,
+            fontWeight: 500,
+            padding: '2px 6px',
+            borderRadius: 3,
+            whiteSpace: 'nowrap',
+            fontFamily: 'Inter, sans-serif',
+          }}>
+            {Math.round(el.width)} × {Math.round(el.height)}
+          </div>
+        </div>
+      );
+    });
+
+    return <>{overlays}</>;
+  };
+
+  const cursorStyle = spaceHeld || activeTool === 'hand' ? 'grab' :
+    activeTool === 'zoom' ? 'zoom-in' :
+    (activeTool === 'frame' || activeTool === 'rectangle' || activeTool === 'ellipse' || activeTool === 'text') ? 'crosshair' : 'default';
+
+  return (
+    <div
+      ref={canvasRef}
+      className="canvas-container"
+      style={{
+        flex: 1,
+        overflow: 'hidden',
+        background: '#1e1e1e',
+        cursor: cursorStyle,
+        position: 'relative',
+      }}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      onWheel={handleWheel}
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+    >
+      {/* Grid pattern - more subtle and professional */}
+      <div style={{
+        position: 'absolute',
+        inset: 0,
+        backgroundImage: `
+          radial-gradient(circle, #2a2a2a 1px, transparent 1px),
+          radial-gradient(circle, #252525 1px, transparent 1px)
+        `,
+        backgroundSize: `${20 * canvasTransform.scale}px ${20 * canvasTransform.scale}px, ${100 * canvasTransform.scale}px ${100 * canvasTransform.scale}px`,
+        backgroundPosition: `${canvasTransform.x}px ${canvasTransform.y}px`,
+        opacity: canvasTransform.scale > 0.5 ? 0.6 : 0.3,
+        transition: 'opacity 0.2s ease',
+      }} />
+      
+      {/* Drill-down breadcrumb */}
+      {drillFrameId && (
+        <div style={{
+          position: 'absolute',
+          top: 8,
+          left: 8,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+          background: '#1a1a1a',
+          border: '1px solid #333',
+          borderRadius: 6,
+          padding: '4px 8px',
+          zIndex: 1000,
+          fontSize: 11,
+          fontFamily: 'Inter, sans-serif',
+        }}>
+          <button
+            onClick={() => setDrillFrameId(null)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#888',
+              cursor: 'pointer',
+              fontSize: 11,
+              padding: '2px 4px',
+              borderRadius: 3,
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#252525')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            Canvas
+          </button>
+          {getDrillBreadcrumb().map((item, i) => (
+            <React.Fragment key={item.id}>
+              <span style={{ color: '#444' }}>/</span>
+              <button
+                onClick={() => setDrillFrameId(item.id)}
+                style={{
+                  background: i === getDrillBreadcrumb().length - 1 ? '#252525' : 'transparent',
+                  border: 'none',
+                  color: i === getDrillBreadcrumb().length - 1 ? '#fff' : '#888',
+                  cursor: 'pointer',
+                  fontSize: 11,
+                  padding: '2px 6px',
+                  borderRadius: 3,
+                  fontWeight: i === getDrillBreadcrumb().length - 1 ? 600 : 400,
+                }}
+                onMouseEnter={(e) => {
+                  if (i !== getDrillBreadcrumb().length - 1) e.currentTarget.style.background = '#252525';
+                }}
+                onMouseLeave={(e) => {
+                  if (i !== getDrillBreadcrumb().length - 1) e.currentTarget.style.background = 'transparent';
+                }}
+              >
+                {item.name}
+              </button>
+            </React.Fragment>
+          ))}
+          <span style={{ color: '#444', marginLeft: 4, fontSize: 10 }}>double-click to exit</span>
+        </div>
+      )}
+      
+      {/* Hover tooltip */}
+      {hoveredId && !selectedIds.includes(hoveredId) && activeTool === 'select' && (() => {
+        const el = elements[hoveredId];
+        if (!el) return null;
+        const typeLabels: Record<string, string> = {
+          frame: 'Frame', rectangle: 'Rectangle', ellipse: 'Ellipse',
+          text: 'Text', heading: 'Heading', paragraph: 'Paragraph',
+          image: 'Image', button: 'Button', group: 'Group',
+        };
+        return (
+          <div style={{
+            position: 'absolute',
+            bottom: 8,
+            left: 8,
+            background: '#1a1a1a',
+            border: '1px solid #333',
+            borderRadius: 6,
+            padding: '6px 10px',
+            zIndex: 1000,
+            fontSize: 11,
+            fontFamily: 'Inter, sans-serif',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            color: '#aaa',
+          }}>
+            <span style={{ color: '#3b82f6', fontWeight: 600 }}>{typeLabels[el.type] || el.type}</span>
+            <span style={{ color: '#555' }}>|</span>
+            <span>{el.name}</span>
+            <span style={{ color: '#555' }}>|</span>
+            <span style={{ color: '#666' }}>{Math.round(el.width)} × {Math.round(el.height)}</span>
+          </div>
+        );
+      })()}
+      
+      {/* Selection info */}
+      {selectedIds.length > 0 && (
+        <div style={{
+          position: 'absolute',
+          bottom: 8,
+          left: 8,
+          background: '#1a1a1a',
+          border: '1px solid #3b82f6',
+          borderRadius: 6,
+          padding: '6px 10px',
+          zIndex: 1000,
+          fontSize: 11,
+          fontFamily: 'Inter, sans-serif',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          color: '#aaa',
+        }}>
+          <span style={{ color: '#3b82f6', fontWeight: 600 }}>
+            {selectedIds.length === 1 ? elements[selectedIds[0]]?.name : `${selectedIds.length} selected`}
+          </span>
+          <span style={{ color: '#555' }}>|</span>
+          <span style={{ color: '#666' }}>
+            {selectedIds.length === 1 
+              ? `${Math.round(elements[selectedIds[0]]?.width || 0)} × ${Math.round(elements[selectedIds[0]]?.height || 0)}`
+              : 'Multiple elements'
+            }
+          </span>
+          {selectedIds.length === 1 && (
+            <>
+              <span style={{ color: '#555' }}>|</span>
+              <span style={{ color: '#666' }}>
+                X: {Math.round(elements[selectedIds[0]]?.x || 0)} Y: {Math.round(elements[selectedIds[0]]?.y || 0)}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Canvas content */}
+      <div
+        className="canvas-inner"
+        style={{
+          position: 'absolute',
+          transformOrigin: '0 0',
+          transform: `translate(${canvasTransform.x}px, ${canvasTransform.y}px) scale(${canvasTransform.scale})`,
+          transition: isPanning ? 'none' : 'transform 0.1s ease-out',
+          willChange: 'transform',
+        }}
+      >
+        {/* Alignment bar */}
+        {selectedIds.length >= 2 && <AlignmentBar />}
+        {/* Viewport guide - shows current viewport width */}
+        <div style={{
+          position: 'absolute',
+          left: 0,
+          top: -30,
+          width: currentWidth,
+          height: 20,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 11,
+          color: '#555',
+          fontFamily: 'monospace',
+          pointerEvents: 'none',
+          zIndex: 0,
+        }}>
+          {viewportMode} • {currentWidth}px
+        </div>
+
+        {/* Rendered elements */}
+        {rootIds.length === 0 ? (
+          <div style={{
+            position: 'absolute',
+            left: 200,
+            top: 200,
+            width: 440,
+            padding: 32,
+            background: '#1e1e1e',
+            border: '1px solid #2a2a2a',
+            borderRadius: 8,
+            textAlign: 'center',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+          }}>
+            <div style={{ fontSize: 18, color: '#ddd', marginBottom: 16, fontWeight: 600 }}>Canvas is empty</div>
+            <div style={{ fontSize: 13, color: '#888', lineHeight: 2, marginBottom: 20 }}>
+              Start creating by using tools or keyboard shortcuts:
+            </div>
+            <div style={{ 
+              display: 'grid', 
+              gridTemplateColumns: '1fr 1fr', 
+              gap: 8,
+              marginBottom: 20,
+              textAlign: 'left',
+            }}>
+              {[
+                { key: 'F', label: 'Frame' },
+                { key: 'R', label: 'Rectangle' },
+                { key: 'O', label: 'Ellipse' },
+                { key: 'T', label: 'Text' },
+                { key: 'L', label: 'Line' },
+                { key: 'V', label: 'Select' },
+              ].map(({ key, label }) => (
+                <div key={key} style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '6px 12px',
+                  background: '#252525',
+                  borderRadius: 4,
+                }}>
+                  <kbd style={{
+                    background: '#333',
+                    color: '#3b82f6',
+                    padding: '2px 8px',
+                    borderRadius: 3,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    fontFamily: 'monospace',
+                    minWidth: 24,
+                    textAlign: 'center',
+                  }}>{key}</kbd>
+                  <span style={{ color: '#aaa', fontSize: 12 }}>{label}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{
+              padding: '10px 16px',
+              background: '#252525',
+              borderRadius: 6,
+              fontSize: 12,
+              color: '#666',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+            }}>
+              <span>Press</span>
+              <kbd style={{
+                background: '#333',
+                color: '#3b82f6',
+                padding: '2px 8px',
+                borderRadius: 3,
+                fontSize: 11,
+                fontWeight: 600,
+                fontFamily: 'monospace',
+              }}>Ctrl+K</kbd>
+              <span>for command menu</span>
+            </div>
+          </div>
+        ) : rootIds.map((id) => {
+          const el = elements[id];
+          if (el) return renderElement(el);
+          return null;
+        })}
+
+        {/* Selection overlays */}
+        {renderSelectionOverlay()}
+
+        {/* Snap guides */}
+        <SnapGuides guides={snapGuides} />
+
+        {/* Drawing preview */}
+        {isDrawing && (
+          <div style={{
+            position: 'absolute',
+            left: Math.min(drawStart.x, drawCurrent.x),
+            top: Math.min(drawStart.y, drawCurrent.y),
+            width: Math.abs(drawCurrent.x - drawStart.x),
+            height: Math.abs(drawCurrent.y - drawStart.y),
+            border: '1.5px solid #3b82f6',
+            background: 'rgba(59, 130, 246, 0.05)',
+            pointerEvents: 'none',
+            borderRadius: activeTool === 'ellipse' ? '50%' : 0,
+          }} />
+        )}
+
+        {/* Selection box */}
+        {selectionBox && (
+          <div style={{
+            position: 'absolute',
+            left: selectionBox.x,
+            top: selectionBox.y,
+            width: selectionBox.w,
+            height: selectionBox.h,
+            border: '1.5px solid #3b82f6',
+            background: 'rgba(59, 130, 246, 0.1)',
+            borderRadius: 2,
+            pointerEvents: 'none',
+            boxShadow: '0 0 0 1px rgba(59, 130, 246, 0.2)',
+          }} />
+        )}
+      </div>
+    </div>
+  );
+};
