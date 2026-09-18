@@ -87,54 +87,59 @@ interface EditorState {
   setImportLoading: (loading: boolean) => void;
 }
 
-const createDefaultElement = (type: ElementType, x: number, y: number): DesignElement => ({
-  id: uuid(),
-  type,
-  name: type.charAt(0).toUpperCase() + type.slice(1),
-  parentId: null,
-  children: [],
-  x,
-  y,
-  width: type === 'frame' ? 1440 : 200,
-  height: type === 'frame' ? 900 : 100,
-  rotation: 0,
-  opacity: 1,
-  visible: true,
-  locked: false,
-  background: type === 'frame' ? '#ffffff' : 'transparent',
-  border: { width: 0, style: 'solid', color: '#000000' },
-  borderRadius: 0,
-  shadow: null,
-  padding: { top: 0, right: 0, bottom: 0, left: 0 },
-  margin: { top: 0, right: 0, bottom: 0, left: 0 },
-  display: 'block',
-  position: 'absolute',
-  typography: type === 'text' || type === 'heading' || type === 'paragraph' || type === 'button' ? {
-    fontFamily: 'Inter, sans-serif',
-    fontSize: type === 'heading' ? 32 : 16,
-    fontWeight: type === 'heading' ? 700 : 400,
-    lineHeight: 1.5,
-    letterSpacing: 0,
-    textAlign: 'left',
-    textTransform: 'none',
-    color: '#000000',
-  } : null,
-  layout: {
+const createDefaultElement = (type: ElementType, x: number, y: number): DesignElement => {
+  const viewportWidths = { desktop: 1440, tablet: 768, mobile: 390 };
+  const { viewportMode } = useEditorStore.getState();
+  
+  return {
+    id: uuid(),
+    type,
+    name: type.charAt(0).toUpperCase() + type.slice(1),
+    parentId: null,
+    children: [],
+    x,
+    y,
+    width: type === 'frame' ? viewportWidths[viewportMode] : 200,
+    height: type === 'frame' ? 900 : 100,
+    rotation: 0,
+    opacity: 1,
+    visible: true,
+    locked: false,
+    background: type === 'frame' ? '#ffffff' : 'transparent',
+    border: { width: 0, style: 'solid', color: '#000000' },
+    borderRadius: 0,
+    shadow: null,
+    padding: { top: 0, right: 0, bottom: 0, left: 0 },
+    margin: { top: 0, right: 0, bottom: 0, left: 0 },
     display: 'block',
-    flexDirection: 'column',
-    justifyContent: 'flex-start',
-    alignItems: 'flex-start',
-    gap: 0,
-    gridColumns: '',
-    gridRows: '',
-  },
-  content: type === 'text' ? 'Text' : type === 'heading' ? 'Heading' : '',
-  src: '',
-  href: '',
-  tag: type === 'heading' ? 'h2' : type === 'paragraph' ? 'p' : 'div',
-  zIndex: 0,
-  overflow: 'visible',
-});
+    position: 'absolute',
+    typography: type === 'text' || type === 'heading' || type === 'paragraph' || type === 'button' ? {
+      fontFamily: 'Inter, sans-serif',
+      fontSize: type === 'heading' ? 32 : 16,
+      fontWeight: type === 'heading' ? 700 : 400,
+      lineHeight: 1.5,
+      letterSpacing: 0,
+      textAlign: 'left',
+      textTransform: 'none',
+      color: '#000000',
+    } : null,
+    layout: {
+      display: type === 'frame' ? 'flex' : 'block',
+      flexDirection: 'column',
+      justifyContent: 'flex-start',
+      alignItems: type === 'frame' ? 'stretch' : 'flex-start',
+      gap: 0,
+      gridColumns: '',
+      gridRows: '',
+    },
+    content: type === 'text' ? 'Text' : type === 'heading' ? 'Heading' : '',
+    src: '',
+    href: '',
+    tag: type === 'heading' ? 'h2' : type === 'paragraph' ? 'p' : 'div',
+    zIndex: 0,
+    overflow: type === 'frame' ? 'hidden' : 'visible',
+  };
+};
 
 export const useEditorStore = create<EditorState>((set, get) => ({
   view: 'dashboard',
@@ -228,15 +233,23 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setCanvasTransform: (transform) => set({ canvasTransform: transform }),
   zoomIn: () => {
     const { canvasTransform } = get();
-    const newScale = Math.min(canvasTransform.scale * 1.2, 5);
+    // Use more natural zoom steps
+    const steps = [0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 5];
+    const currentIndex = steps.findIndex(s => s >= canvasTransform.scale);
+    const nextIndex = Math.min(currentIndex + 1, steps.length - 1);
+    const newScale = steps[nextIndex];
     set({ canvasTransform: { ...canvasTransform, scale: newScale } });
   },
   zoomOut: () => {
     const { canvasTransform } = get();
-    const newScale = Math.max(canvasTransform.scale / 1.2, 0.1);
+    // Use more natural zoom steps
+    const steps = [0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 5];
+    const currentIndex = steps.findIndex(s => s >= canvasTransform.scale);
+    const prevIndex = Math.max(currentIndex - 1, 0);
+    const newScale = steps[prevIndex];
     set({ canvasTransform: { ...canvasTransform, scale: newScale } });
   },
-  zoomToFit: () => set({ canvasTransform: { x: 0, y: 0, scale: 0.7 } }),
+  zoomToFit: () => set({ canvasTransform: { x: 0, y: 0, scale: 0.5 } }),
   resetZoom: () => set({ canvasTransform: { x: 0, y: 0, scale: 1 } }),
 
   viewportMode: 'desktop',

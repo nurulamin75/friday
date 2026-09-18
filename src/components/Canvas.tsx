@@ -28,16 +28,21 @@ export const Canvas: React.FC = () => {
   const viewportWidths = { desktop: 1440, tablet: 768, mobile: 390 };
   const currentWidth = viewportWidths[viewportMode];
 
-  // Center view on load
+  // Center view on load - start at 100% zoom
   useEffect(() => {
     if (rootIds.length > 0) {
       const container = canvasRef.current;
       if (container) {
         const rect = container.getBoundingClientRect();
+        // Start at 100% zoom, centered on the first frame
+        const firstFrame = elements[rootIds[0]];
+        const frameX = firstFrame?.x || 0;
+        const frameY = firstFrame?.y || 0;
+        
         setCanvasTransform({
-          x: (rect.width - 1440) / 2,
-          y: 40,
-          scale: Math.min(rect.width / 1600, 0.8),
+          x: rect.width / 2 - frameX - (firstFrame?.width || 1440) / 2,
+          y: rect.height / 2 - frameY - (firstFrame?.height || 900) / 2,
+          scale: 1, // Start at 100% zoom
         });
       }
     }
@@ -179,17 +184,37 @@ export const Canvas: React.FC = () => {
       const el = elements[dragState.id];
       
       if (el) {
-        // Calculate snap guides
-        const otherElements = Object.values(elements).filter((e) => e.id !== dragState.id && e.visible);
-        const { guides, snappedX, snappedY } = calculateSnapGuides(
-          { x: newX, y: newY, width: el.width, height: el.height },
-          otherElements
-        );
+        // For elements with parents, we need to account for parent position
+        let finalX = newX;
+        let finalY = newY;
         
-        setSnapGuides(guides);
-        updateElement(dragState.id, { x: snappedX, y: snappedY });
-      } else {
-        updateElement(dragState.id, { x: newX, y: newY });
+        // If this element has a parent, calculate relative position
+        if (el.parentId && elements[el.parentId]) {
+          const parent = elements[el.parentId];
+          // For relative positioned children, we need to adjust
+          if (el.position === 'relative') {
+            // Keep the relative positioning but update the offset
+            finalX = newX - parent.x;
+            finalY = newY - parent.y;
+          }
+        }
+        
+        // Calculate snap guides (only for root-level elements to avoid confusion)
+        if (!el.parentId) {
+          const otherElements = Object.values(elements).filter((e) => e.id !== dragState.id && e.visible && !e.parentId);
+          const { guides, snappedX, snappedY } = calculateSnapGuides(
+            { x: newX, y: newY, width: el.width, height: el.height },
+            otherElements
+          );
+          
+          setSnapGuides(guides);
+          finalX = snappedX;
+          finalY = snappedY;
+        } else {
+          setSnapGuides([]);
+        }
+        
+        updateElement(dragState.id, { x: finalX, y: finalY });
       }
       return;
     }
@@ -301,9 +326,12 @@ export const Canvas: React.FC = () => {
   const handleElementMouseDown = useCallback((e: React.MouseEvent, id: string) => {
     if (activeTool !== 'select') return;
     e.stopPropagation();
+    e.preventDefault();
+    
     const el = elements[id];
     if (!el || el.locked) return;
 
+    // Select the element
     if (e.shiftKey) {
       if (selectedIds.includes(id)) {
         setSelectedIds(selectedIds.filter((s) => s !== id));
@@ -314,11 +342,14 @@ export const Canvas: React.FC = () => {
       setSelectedIds([id]);
     }
 
+    // Start drag for any element
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const pos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
+    
+    // Allow dragging of any non-locked element
     setDragState({ id, startX: pos.x, startY: pos.y, elX: el.x, elY: el.y });
-  }, [activeTool, elements, selectedIds, screenToCanvas]);
+  }, [activeTool, elements, selectedIds, screenToCanvas, addToSelection, setSelectedIds]);
 
   const handleElementDoubleClick = useCallback((e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -349,6 +380,7 @@ export const Canvas: React.FC = () => {
     const isSelected = selectedIds.includes(el.id);
     const isText = el.type === 'text' || el.type === 'heading' || el.type === 'paragraph';
     const isEditing = editingTextId === el.id;
+    const isFrame = el.type === 'frame';
 
     const isChild = el.parentId !== null;
     const isAbsolute = el.position === 'absolute';
@@ -362,14 +394,17 @@ export const Canvas: React.FC = () => {
       transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
       opacity: el.opacity,
       background: el.background || 'transparent',
-      border: el.border.width > 0 ? `${el.border.width}px ${el.border.style} ${el.border.color}` : 'none',
+      border: el.border.width > 0 ? `${el.border.width}px ${el.border.style} ${el.border.color}` : (isFrame && !isChild ? '1px solid #333' : 'none'),
       borderRadius: el.borderRadius,
-      boxShadow: el.shadow ? `${el.shadow.x}px ${el.shadow.y}px ${el.shadow.blur}px ${el.shadow.spread}px ${el.shadow.color}` : 'none',
+      boxShadow: el.shadow 
+        ? `${el.shadow.x}px ${el.shadow.y}px ${el.shadow.blur}px ${el.shadow.spread}px ${el.shadow.color}` 
+        : (isFrame && !isChild ? '0 4px 20px rgba(0,0,0,0.3)' : 'none'),
       padding: `${el.padding.top}px ${el.padding.right}px ${el.padding.bottom}px ${el.padding.left}px`,
       margin: `${el.margin.top}px ${el.margin.right}px ${el.margin.bottom}px ${el.margin.left}px`,
       overflow: el.overflow,
       zIndex: el.zIndex + depth,
       cursor: activeTool === 'select' ? (el.locked ? 'not-allowed' : 'move') : 'default',
+      pointerEvents: 'all', // Ensure all elements can receive clicks
     };
 
     // Apply flex layout
@@ -435,6 +470,22 @@ export const Canvas: React.FC = () => {
         onMouseEnter={() => setHoveredId(el.id)}
         onMouseLeave={() => setHoveredId(null)}
       >
+        {/* Frame label */}
+        {isFrame && (isSelected || hoveredId === el.id) && (
+          <div style={{
+            position: 'absolute',
+            top: -22,
+            left: 0,
+            fontSize: 11,
+            color: isSelected ? '#3b82f6' : '#888',
+            fontWeight: isSelected ? 600 : 400,
+            whiteSpace: 'nowrap',
+            pointerEvents: 'none',
+            fontFamily: 'Inter, sans-serif',
+          }}>
+            {el.name}
+          </div>
+        )}
         {isEditing ? (
           <textarea
             autoFocus
@@ -568,7 +619,7 @@ export const Canvas: React.FC = () => {
       style={{
         flex: 1,
         overflow: 'hidden',
-        background: '#1a1a1a',
+        background: '#1e1e1e',
         cursor: cursorStyle,
         position: 'relative',
       }}
@@ -580,14 +631,18 @@ export const Canvas: React.FC = () => {
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
-      {/* Grid pattern */}
+      {/* Grid pattern - more subtle and professional */}
       <div style={{
         position: 'absolute',
         inset: 0,
-        backgroundImage: 'radial-gradient(circle, #333 1px, transparent 1px)',
-        backgroundSize: `${20 * canvasTransform.scale}px ${20 * canvasTransform.scale}px`,
+        backgroundImage: `
+          radial-gradient(circle, #2a2a2a 1px, transparent 1px),
+          radial-gradient(circle, #252525 1px, transparent 1px)
+        `,
+        backgroundSize: `${20 * canvasTransform.scale}px ${20 * canvasTransform.scale}px, ${100 * canvasTransform.scale}px ${100 * canvasTransform.scale}px`,
         backgroundPosition: `${canvasTransform.x}px ${canvasTransform.y}px`,
-        opacity: 0.5,
+        opacity: canvasTransform.scale > 0.5 ? 0.6 : 0.3,
+        transition: 'opacity 0.2s ease',
       }} />
 
       {/* Canvas content */}
@@ -597,31 +652,29 @@ export const Canvas: React.FC = () => {
           position: 'absolute',
           transformOrigin: '0 0',
           transform: `translate(${canvasTransform.x}px, ${canvasTransform.y}px) scale(${canvasTransform.scale})`,
+          transition: isPanning ? 'none' : 'transform 0.1s ease-out',
+          willChange: 'transform',
         }}
       >
         {/* Alignment bar */}
         {selectedIds.length >= 2 && <AlignmentBar />}
-        {/* Viewport frame indicator */}
+        {/* Viewport guide - shows current viewport width */}
         <div style={{
           position: 'absolute',
           left: 0,
-          top: 0,
+          top: -30,
           width: currentWidth,
-          height: 2000,
-          border: '1px dashed #444',
+          height: 20,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 11,
+          color: '#555',
+          fontFamily: 'monospace',
           pointerEvents: 'none',
           zIndex: 0,
         }}>
-          <div style={{
-            position: 'absolute',
-            top: -20,
-            left: 0,
-            fontSize: 11,
-            color: '#666',
-            fontFamily: 'monospace',
-          }}>
-            {currentWidth}px
-          </div>
+          {viewportMode} • {currentWidth}px
         </div>
 
         {/* Rendered elements */}

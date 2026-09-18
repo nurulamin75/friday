@@ -19,7 +19,6 @@ import { saveProject } from './utils/storage';
 const Editor: React.FC = () => {
   const { currentProject, elements, rootIds } = useEditorStore();
   const [rightPanel, setRightPanel] = useState<'properties' | 'tokens'>('properties');
-  const [showPages, setShowPages] = useState(false);
 
   // Auto-save
   useEffect(() => {
@@ -57,7 +56,7 @@ const Editor: React.FC = () => {
       <Toolbar />
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <LeftToolbar />
-        {showPages && <PagesPanel />}
+        <PagesPanel />
         <LayersPanel />
         <Canvas />
         <div style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
@@ -115,25 +114,6 @@ const Editor: React.FC = () => {
         color: '#555',
         flexShrink: 0,
       }}>
-        <button
-          onClick={() => setShowPages(!showPages)}
-          style={{
-            background: showPages ? '#252525' : 'transparent',
-            border: 'none',
-            borderRadius: 3,
-            cursor: 'pointer',
-            color: showPages ? '#fff' : '#666',
-            fontSize: 11,
-            padding: '2px 8px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 4,
-          }}
-          title="Toggle Pages Panel"
-        >
-          <Icons.Layers size={12} /> Pages
-        </button>
-        <div style={{ width: 1, height: 14, background: '#333' }} />
         <span>{Object.keys(elements).length} elements</span>
         <span>{rootIds.length} root layers</span>
         <div style={{ width: 1, height: 14, background: '#333' }} />

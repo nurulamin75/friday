@@ -87,7 +87,7 @@ export const PagesPanel: React.FC = () => {
 
   return (
     <div style={{
-      width: 220,
+      width: 200,
       background: '#1a1a1a',
       borderRight: '1px solid #2a2a2a',
       display: 'flex',
@@ -96,23 +96,23 @@ export const PagesPanel: React.FC = () => {
     }}>
       {/* Header */}
       <div style={{
-        height: 32,
+        height: 36,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '0 8px',
+        padding: '0 12px',
         borderBottom: '1px solid #2a2a2a',
         flexShrink: 0,
       }}>
-        <span style={{ fontSize: 11, fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: '#aaa' }}>
           Pages
         </span>
         <button
           onClick={handleAddPage}
           title="Add page"
           style={{
-            width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: 'transparent', border: 'none', borderRadius: 3, cursor: 'pointer', color: '#888',
+            width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: '#252525', border: '1px solid #333', borderRadius: 4, cursor: 'pointer', color: '#888',
           }}
         >
           <Icons.Plus size={12} />
