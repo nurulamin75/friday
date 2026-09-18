@@ -1,27 +1,40 @@
 import React, { useState } from 'react';
 import { useEditorStore } from '../store';
 import { Icons } from './Icons';
-import { exportToHTML, exportToCSS, exportToJSON, downloadFile } from '../utils/exporter';
+import { exportToHTML, exportToCSS, exportToJSON, exportToPNG, downloadFile } from '../utils/exporter';
 import { showToast } from './Toast';
 
 const ExportButton: React.FC = () => {
   const [open, setOpen] = useState(false);
   const { elements, rootIds } = useEditorStore();
 
-  const handleExport = (format: string) => {
-    switch (format) {
-      case 'html':
-        downloadFile(exportToHTML(elements, rootIds), 'export.html', 'text/html');
-        break;
-      case 'css':
-        downloadFile(exportToCSS(elements), 'export.css', 'text/css');
-        break;
-      case 'json':
-        downloadFile(exportToJSON(elements, rootIds), 'export.json', 'application/json');
-        break;
+  const handleExport = async (format: string) => {
+    try {
+      switch (format) {
+        case 'html':
+          downloadFile(exportToHTML(elements, rootIds), 'export.html', 'text/html');
+          break;
+        case 'css':
+          downloadFile(exportToCSS(elements), 'export.css', 'text/css');
+          break;
+        case 'json':
+          downloadFile(exportToJSON(elements, rootIds), 'export.json', 'application/json');
+          break;
+        case 'png':
+          const blob = await exportToPNG(elements, rootIds);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'export.png';
+          a.click();
+          URL.revokeObjectURL(url);
+          break;
+      }
+      setOpen(false);
+      showToast(`Exported as ${format.toUpperCase()}`, 'success');
+    } catch (error) {
+      showToast(`Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
     }
-    setOpen(false);
-    showToast(`Exported as ${format.toUpperCase()}`, 'success');
   };
 
   return (
@@ -49,7 +62,7 @@ const ExportButton: React.FC = () => {
           zIndex: 1000,
           boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
         }}>
-          {['html', 'css', 'json'].map((fmt) => (
+          {['html', 'css', 'json', 'png'].map((fmt) => (
             <button
               key={fmt}
               onClick={() => handleExport(fmt)}

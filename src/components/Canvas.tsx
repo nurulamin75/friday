@@ -84,14 +84,27 @@ export const Canvas: React.FC = () => {
     };
   }, [selectedIds, editingTextId]);
 
-  // Wheel zoom
+  // Wheel zoom - zoom to cursor position
   const handleWheel = useCallback((e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      
       const delta = e.deltaY > 0 ? 0.9 : 1.1;
       const { canvasTransform: ct } = useEditorStore.getState();
       const newScale = Math.min(Math.max(ct.scale * delta, 0.1), 5);
-      setCanvasTransform({ ...ct, scale: newScale });
+      
+      // Calculate cursor position relative to canvas
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      
+      // Calculate new position to zoom towards cursor
+      const scaleChange = newScale / ct.scale;
+      const newX = mouseX - (mouseX - ct.x) * scaleChange;
+      const newY = mouseY - (mouseY - ct.y) * scaleChange;
+      
+      setCanvasTransform({ x: newX, y: newY, scale: newScale });
     } else {
       const { canvasTransform: ct } = useEditorStore.getState();
       setCanvasTransform({ ...ct, x: ct.x - e.deltaX, y: ct.y - e.deltaY });
@@ -207,6 +220,39 @@ export const Canvas: React.FC = () => {
       });
     }
   }, [isPanning, isDrawing, dragState, resizeState, selectionBox, drawStart, screenToCanvas]);
+
+  // Drag and drop image support
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files);
+    const imageFiles = files.filter((f) => f.type.startsWith('image/'));
+    
+    if (imageFiles.length === 0) return;
+
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const pos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
+
+    imageFiles.forEach((file, index) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const src = event.target?.result as string;
+        const el = createDefaultElement('image', pos.x + index * 20, pos.y + index * 20);
+        el.src = src;
+        el.name = file.name;
+        el.width = 200;
+        el.height = 150;
+        addElement(el);
+        setSelectedIds([el.id]);
+      };
+      reader.readAsDataURL(file);
+    });
+  }, [screenToCanvas, addElement, setSelectedIds]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+  }, []);
 
   const handleMouseUp = useCallback(() => {
     if (isDrawing) {
@@ -531,6 +577,8 @@ export const Canvas: React.FC = () => {
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
       onWheel={handleWheel}
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
     >
       {/* Grid pattern */}
       <div style={{

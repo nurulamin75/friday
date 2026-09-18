@@ -1,4 +1,5 @@
 import type { DesignElement } from '../types';
+import html2canvas from 'html2canvas';
 
 function elementToCSS(el: DesignElement): string {
   const styles: string[] = [];
@@ -150,6 +151,133 @@ export function exportToCSS(elements: Record<string, DesignElement>): string {
 
 export function exportToJSON(elements: Record<string, DesignElement>, rootIds: string[]): string {
   return JSON.stringify({ elements, rootIds }, null, 2);
+}
+
+export async function exportToPNG(
+  elements: Record<string, DesignElement>,
+  rootIds: string[],
+  width: number = 1440,
+  height: number = 900
+): Promise<Blob> {
+  // Create a temporary container to render the design
+  const container = document.createElement('div');
+  container.style.cssText = `
+    position: fixed;
+    left: -9999px;
+    top: 0;
+    width: ${width}px;
+    min-height: ${height}px;
+    background: white;
+    overflow: visible;
+    font-family: Inter, sans-serif;
+  `;
+  document.body.appendChild(container);
+
+  // Render elements
+  const renderElement = (el: DesignElement): HTMLElement => {
+    const div = document.createElement('div');
+    div.style.position = el.position === 'absolute' ? 'absolute' : 'relative';
+    if (el.position === 'absolute') {
+      div.style.left = `${el.x}px`;
+      div.style.top = `${el.y}px`;
+    }
+    div.style.width = `${el.width}px`;
+    if (el.height > 0) div.style.height = `${el.height}px`;
+    div.style.background = el.background || 'transparent';
+    if (el.border.width > 0) {
+      div.style.border = `${el.border.width}px ${el.border.style} ${el.border.color}`;
+    }
+    div.style.borderRadius = `${el.borderRadius}px`;
+    if (el.shadow) {
+      div.style.boxShadow = `${el.shadow.x}px ${el.shadow.y}px ${el.shadow.blur}px ${el.shadow.spread}px ${el.shadow.color}`;
+    }
+    div.style.opacity = `${el.opacity}`;
+    div.style.padding = `${el.padding.top}px ${el.padding.right}px ${el.padding.bottom}px ${el.padding.left}px`;
+    if (el.rotation) div.style.transform = `rotate(${el.rotation}deg)`;
+    div.style.overflow = el.overflow;
+
+    // Layout
+    if (el.layout.display === 'flex') {
+      div.style.display = 'flex';
+      div.style.flexDirection = el.layout.flexDirection;
+      div.style.justifyContent = el.layout.justifyContent;
+      div.style.alignItems = el.layout.alignItems;
+      if (el.layout.gap > 0) div.style.gap = `${el.layout.gap}px`;
+    } else if (el.layout.display === 'grid') {
+      div.style.display = 'grid';
+      if (el.layout.gridColumns) div.style.gridTemplateColumns = el.layout.gridColumns;
+      if (el.layout.gridRows) div.style.gridTemplateRows = el.layout.gridRows;
+      if (el.layout.gap > 0) div.style.gap = `${el.layout.gap}px`;
+    }
+
+    // Typography
+    if (el.typography) {
+      div.style.fontFamily = el.typography.fontFamily;
+      div.style.fontSize = `${el.typography.fontSize}px`;
+      div.style.fontWeight = `${el.typography.fontWeight}`;
+      div.style.lineHeight = `${el.typography.lineHeight}`;
+      div.style.letterSpacing = `${el.typography.letterSpacing}px`;
+      div.style.textAlign = el.typography.textAlign;
+      div.style.textTransform = el.typography.textTransform;
+      div.style.color = el.typography.color;
+    }
+
+    // Content
+    if (el.content) {
+      div.textContent = el.content;
+    }
+
+    // Image
+    if (el.type === 'image' && el.src) {
+      const img = document.createElement('img');
+      img.src = el.src;
+      img.style.width = '100%';
+      img.style.height = '100%';
+      img.style.objectFit = 'cover';
+      img.crossOrigin = 'anonymous';
+      div.appendChild(img);
+    }
+
+    // Children
+    el.children.forEach((childId) => {
+      const child = elements[childId];
+      if (child) {
+        div.appendChild(renderElement(child));
+      }
+    });
+
+    return div;
+  };
+
+  rootIds.forEach((id) => {
+    const el = elements[id];
+    if (el) container.appendChild(renderElement(el));
+  });
+
+  try {
+    // Use html2canvas to capture the rendered design
+    const canvas = await html2canvas(container, {
+      backgroundColor: '#ffffff',
+      scale: 2, // Higher quality
+      useCORS: true,
+      allowTaint: true,
+    });
+
+    // Convert canvas to blob
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        document.body.removeChild(container);
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error('Failed to create PNG blob'));
+        }
+      }, 'image/png');
+    });
+  } catch (error) {
+    document.body.removeChild(container);
+    throw error;
+  }
 }
 
 export function downloadFile(content: string, filename: string, type: string) {

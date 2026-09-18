@@ -98,9 +98,34 @@ function parseInlineStyles(el: HTMLElement): Partial<DesignElement> {
     };
   }
 
+  // Margin
+  if (style.margin) {
+    const parts = style.margin.split(' ').map((p) => parseInt(p) || 0);
+    result.margin = {
+      top: parts[0] || 0,
+      right: parts[1] || parts[0] || 0,
+      bottom: parts[2] || parts[0] || 0,
+      left: parts[3] || parts[1] || parts[0] || 0,
+    };
+  }
+
   // Opacity
   if (style.opacity) {
     result.opacity = parseFloat(style.opacity) || 1;
+  }
+
+  // Box shadow
+  if (style.boxShadow) {
+    const match = style.boxShadow.match(/rgba?\(([^)]+)\)\s*([-\d.]+)px\s*([-\d.]+)px\s*([-\d.]+)px\s*([-\d.]+)px/);
+    if (match) {
+      result.shadow = {
+        x: parseInt(match[2]) || 0,
+        y: parseInt(match[3]) || 0,
+        blur: parseInt(match[4]) || 0,
+        spread: parseInt(match[5]) || 0,
+        color: `rgba(${match[1]})`,
+      };
+    }
   }
 
   return result;
