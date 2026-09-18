@@ -24,9 +24,40 @@ export const Canvas: React.FC = () => {
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [snapGuides, setSnapGuides] = useState<any[]>([]);
+  
+  // Drill-down state: which frame are we "inside" of
+  const [drillFrameId, setDrillFrameId] = useState<string | null>(null);
+  
+  // Track if we just clicked (to differentiate click from drag)
+  const [clickStartTime, setClickStartTime] = useState(0);
+  const [clickStartPos, setClickStartPos] = useState({ x: 0, y: 0 });
 
   const viewportWidths = { desktop: 1440, tablet: 768, mobile: 390 };
   const currentWidth = viewportWidths[viewportMode];
+  
+  // Get visible elements based on drill-down state
+  const getVisibleElements = useCallback(() => {
+    if (!drillFrameId) {
+      // Not drilled in, show all root elements
+      return rootIds;
+    }
+    // Drilled into a frame, show its children
+    const frame = elements[drillFrameId];
+    if (!frame) return rootIds;
+    return frame.children;
+  }, [drillFrameId, rootIds, elements]);
+  
+  // Get breadcrumb path for current drill-down
+  const getDrillBreadcrumb = useCallback(() => {
+    if (!drillFrameId) return [];
+    const path: { id: string; name: string }[] = [];
+    let currentId: string | null = drillFrameId;
+    while (currentId && elements[currentId]) {
+      path.unshift({ id: currentId, name: elements[currentId].name });
+      currentId = elements[currentId].parentId;
+    }
+    return path;
+  }, [drillFrameId, elements]);
 
   // Center view on load - start at 100% zoom
   useEffect(() => {
@@ -76,7 +107,17 @@ export const Canvas: React.FC = () => {
         if (e.shiftKey) useEditorStore.getState().ungroupSelection();
         else useEditorStore.getState().groupSelection();
       }
-      if (e.key === 'Escape') { clearSelection(); setEditingTextId(null); }
+      if (e.key === 'Escape') {
+        if (editingTextId) {
+          setEditingTextId(null);
+        } else if (selectedIds.length > 0) {
+          // If we have selections, clear them
+          clearSelection();
+        } else if (drillFrameId) {
+          // If we're drilled into a frame, go back up
+          setDrillFrameId(null);
+        }
+      }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') setSpaceHeld(false);
@@ -331,6 +372,14 @@ export const Canvas: React.FC = () => {
     const el = elements[id];
     if (!el || el.locked) return;
 
+    // Track click start for click vs drag detection
+    setClickStartTime(Date.now());
+    setClickStartPos({ x: e.clientX, y: e.clientY });
+
+    // If clicking on an already-selected frame with children, prepare to drill down on mouse up
+    const isAlreadySelected = selectedIds.includes(id);
+    const isFrameWithChildren = el.type === 'frame' && el.children.length > 0;
+    
     // Select the element
     if (e.shiftKey) {
       if (selectedIds.includes(id)) {
@@ -342,7 +391,7 @@ export const Canvas: React.FC = () => {
       setSelectedIds([id]);
     }
 
-    // Start drag for any element
+    // Start drag for any element (but not if it's an already-selected frame that we might drill into)
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const pos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
@@ -354,8 +403,16 @@ export const Canvas: React.FC = () => {
   const handleElementDoubleClick = useCallback((e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     const el = elements[id];
-    if (el && (el.type === 'text' || el.type === 'heading' || el.type === 'paragraph')) {
+    if (!el) return;
+    
+    // If it's a text element, enter edit mode
+    if (el.type === 'text' || el.type === 'heading' || el.type === 'paragraph') {
       setEditingTextId(id);
+    }
+    // If it's a frame with children, drill down into it
+    else if ((el.type === 'frame' || el.children.length > 0) && el.children.length > 0) {
+      setDrillFrameId(id);
+      setSelectedIds([]);
     }
   }, [elements]);
 
@@ -405,7 +462,14 @@ export const Canvas: React.FC = () => {
       zIndex: el.zIndex + depth,
       cursor: activeTool === 'select' ? (el.locked ? 'not-allowed' : 'move') : 'default',
       pointerEvents: 'all', // Ensure all elements can receive clicks
+      transition: 'box-shadow 0.15s ease, border-color 0.15s ease',
     };
+    
+    // Add hover highlight for frames
+    if (isFrame && hoveredId === el.id && !isSelected) {
+      style.borderColor = '#3b82f6';
+      style.boxShadow = '0 4px 20px rgba(59, 130, 246, 0.15)';
+    }
 
     // Apply flex layout
     if (el.layout.display === 'flex') {
@@ -482,8 +546,23 @@ export const Canvas: React.FC = () => {
             whiteSpace: 'nowrap',
             pointerEvents: 'none',
             fontFamily: 'Inter, sans-serif',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
           }}>
-            {el.name}
+            <span>{el.name}</span>
+            {el.children.length > 0 && (
+              <>
+                <span style={{ fontSize: 9, color: '#555', fontWeight: 400 }}>
+                  {el.children.length} {el.children.length === 1 ? 'element' : 'elements'}
+                </span>
+                {isSelected && (
+                  <span style={{ fontSize: 9, color: '#666', fontWeight: 400, fontStyle: 'italic' }}>
+                    double-click to enter
+                  </span>
+                )}
+              </>
+            )}
           </div>
         )}
         {isEditing ? (
@@ -516,6 +595,11 @@ export const Canvas: React.FC = () => {
     if (hoveredId && !selectedIds.includes(hoveredId)) {
       const el = elements[hoveredId];
       if (el && el.visible) {
+        const typeLabels: Record<string, string> = {
+          frame: 'Frame', rectangle: 'Rectangle', ellipse: 'Ellipse',
+          text: 'Text', heading: 'Heading', paragraph: 'Paragraph',
+          image: 'Image', button: 'Button', group: 'Group',
+        };
         overlays.push(
           <div
             key={`hover-${hoveredId}`}
@@ -525,11 +609,28 @@ export const Canvas: React.FC = () => {
               top: el.y - 1,
               width: el.width + 2,
               height: el.height + 2,
-              border: '1px solid rgba(59, 130, 246, 0.5)',
+              border: '1.5px solid rgba(59, 130, 246, 0.6)',
               pointerEvents: 'none',
               zIndex: 99998,
             }}
-          />
+          >
+            {/* Hover label */}
+            <div style={{
+              position: 'absolute',
+              top: -18,
+              left: 0,
+              background: 'rgba(59, 130, 246, 0.8)',
+              color: '#fff',
+              fontSize: 9,
+              fontWeight: 600,
+              padding: '1px 5px',
+              borderRadius: '2px 2px 0 0',
+              whiteSpace: 'nowrap',
+              fontFamily: 'Inter, sans-serif',
+            }}>
+              {typeLabels[el.type] || el.type}
+            </div>
+          </div>
         );
       }
     }
@@ -538,6 +639,20 @@ export const Canvas: React.FC = () => {
     selectedIds.forEach((id) => {
       const el = elements[id];
       if (!el) return;
+      
+      // Element type icon/label
+      const typeLabels: Record<string, string> = {
+        frame: 'Frame',
+        rectangle: 'Rectangle',
+        ellipse: 'Ellipse',
+        text: 'Text',
+        heading: 'Heading',
+        paragraph: 'Paragraph',
+        image: 'Image',
+        button: 'Button',
+        group: 'Group',
+      };
+      
       overlays.push(
         <div
           key={`sel-${id}`}
@@ -547,22 +662,39 @@ export const Canvas: React.FC = () => {
             top: el.y - 1,
             width: el.width + 2,
             height: el.height + 2,
-            border: '1.5px solid #3b82f6',
+            border: '2px solid #3b82f6',
             pointerEvents: 'none',
             zIndex: 99999,
           }}
         >
+          {/* Element type label */}
+          <div style={{
+            position: 'absolute',
+            top: -20,
+            left: 0,
+            background: '#3b82f6',
+            color: '#fff',
+            fontSize: 10,
+            fontWeight: 600,
+            padding: '2px 6px',
+            borderRadius: '3px 3px 0 0',
+            whiteSpace: 'nowrap',
+            fontFamily: 'Inter, sans-serif',
+          }}>
+            {typeLabels[el.type] || el.type}
+          </div>
+          
           {/* Resize handles */}
           {['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'].map((handle) => {
             const positions: Record<string, React.CSSProperties> = {
-              nw: { left: -4, top: -4 },
-              ne: { right: -4, top: -4 },
-              sw: { left: -4, bottom: -4 },
-              se: { right: -4, bottom: -4 },
-              n: { left: '50%', top: -4, transform: 'translateX(-50%)' },
-              s: { left: '50%', bottom: -4, transform: 'translateX(-50%)' },
-              e: { right: -4, top: '50%', transform: 'translateY(-50%)' },
-              w: { left: -4, top: '50%', transform: 'translateY(-50%)' },
+              nw: { left: -5, top: -5 },
+              ne: { right: -5, top: -5 },
+              sw: { left: -5, bottom: -5 },
+              se: { right: -5, bottom: -5 },
+              n: { left: '50%', top: -5, transform: 'translateX(-50%)' },
+              s: { left: '50%', bottom: -5, transform: 'translateX(-50%)' },
+              e: { right: -5, top: '50%', transform: 'translateY(-50%)' },
+              w: { left: -5, top: '50%', transform: 'translateY(-50%)' },
             };
             const cursors: Record<string, string> = {
               nw: 'nw-resize', ne: 'ne-resize', sw: 'sw-resize', se: 'se-resize',
@@ -574,32 +706,36 @@ export const Canvas: React.FC = () => {
                 onMouseDown={(e) => { e.stopPropagation(); handleResizeMouseDown(e, id, handle); }}
                 style={{
                   position: 'absolute',
-                  width: 8,
-                  height: 8,
+                  width: 10,
+                  height: 10,
                   background: '#ffffff',
-                  border: '1.5px solid #3b82f6',
-                  borderRadius: 1,
+                  border: '2px solid #3b82f6',
+                  borderRadius: 2,
                   cursor: cursors[handle],
                   pointerEvents: 'all',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
                   ...positions[handle],
                 }}
               />
             );
           })}
+          
           {/* Dimensions label */}
           <div style={{
             position: 'absolute',
-            bottom: -20,
+            bottom: -22,
             left: '50%',
             transform: 'translateX(-50%)',
             background: '#3b82f6',
             color: '#fff',
             fontSize: 10,
-            padding: '1px 4px',
-            borderRadius: 2,
+            fontWeight: 500,
+            padding: '2px 6px',
+            borderRadius: 3,
             whiteSpace: 'nowrap',
+            fontFamily: 'Inter, sans-serif',
           }}>
-            {Math.round(el.width)} x {Math.round(el.height)}
+            {Math.round(el.width)} × {Math.round(el.height)}
           </div>
         </div>
       );
@@ -644,6 +780,143 @@ export const Canvas: React.FC = () => {
         opacity: canvasTransform.scale > 0.5 ? 0.6 : 0.3,
         transition: 'opacity 0.2s ease',
       }} />
+      
+      {/* Drill-down breadcrumb */}
+      {drillFrameId && (
+        <div style={{
+          position: 'absolute',
+          top: 8,
+          left: 8,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+          background: '#1a1a1a',
+          border: '1px solid #333',
+          borderRadius: 6,
+          padding: '4px 8px',
+          zIndex: 1000,
+          fontSize: 11,
+          fontFamily: 'Inter, sans-serif',
+        }}>
+          <button
+            onClick={() => setDrillFrameId(null)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#888',
+              cursor: 'pointer',
+              fontSize: 11,
+              padding: '2px 4px',
+              borderRadius: 3,
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#252525')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            Canvas
+          </button>
+          {getDrillBreadcrumb().map((item, i) => (
+            <React.Fragment key={item.id}>
+              <span style={{ color: '#444' }}>/</span>
+              <button
+                onClick={() => setDrillFrameId(item.id)}
+                style={{
+                  background: i === getDrillBreadcrumb().length - 1 ? '#252525' : 'transparent',
+                  border: 'none',
+                  color: i === getDrillBreadcrumb().length - 1 ? '#fff' : '#888',
+                  cursor: 'pointer',
+                  fontSize: 11,
+                  padding: '2px 6px',
+                  borderRadius: 3,
+                  fontWeight: i === getDrillBreadcrumb().length - 1 ? 600 : 400,
+                }}
+                onMouseEnter={(e) => {
+                  if (i !== getDrillBreadcrumb().length - 1) e.currentTarget.style.background = '#252525';
+                }}
+                onMouseLeave={(e) => {
+                  if (i !== getDrillBreadcrumb().length - 1) e.currentTarget.style.background = 'transparent';
+                }}
+              >
+                {item.name}
+              </button>
+            </React.Fragment>
+          ))}
+          <span style={{ color: '#444', marginLeft: 4, fontSize: 10 }}>double-click to exit</span>
+        </div>
+      )}
+      
+      {/* Hover tooltip */}
+      {hoveredId && !selectedIds.includes(hoveredId) && activeTool === 'select' && (() => {
+        const el = elements[hoveredId];
+        if (!el) return null;
+        const typeLabels: Record<string, string> = {
+          frame: 'Frame', rectangle: 'Rectangle', ellipse: 'Ellipse',
+          text: 'Text', heading: 'Heading', paragraph: 'Paragraph',
+          image: 'Image', button: 'Button', group: 'Group',
+        };
+        return (
+          <div style={{
+            position: 'absolute',
+            bottom: 8,
+            left: 8,
+            background: '#1a1a1a',
+            border: '1px solid #333',
+            borderRadius: 6,
+            padding: '6px 10px',
+            zIndex: 1000,
+            fontSize: 11,
+            fontFamily: 'Inter, sans-serif',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            color: '#aaa',
+          }}>
+            <span style={{ color: '#3b82f6', fontWeight: 600 }}>{typeLabels[el.type] || el.type}</span>
+            <span style={{ color: '#555' }}>|</span>
+            <span>{el.name}</span>
+            <span style={{ color: '#555' }}>|</span>
+            <span style={{ color: '#666' }}>{Math.round(el.width)} × {Math.round(el.height)}</span>
+          </div>
+        );
+      })()}
+      
+      {/* Selection info */}
+      {selectedIds.length > 0 && (
+        <div style={{
+          position: 'absolute',
+          bottom: 8,
+          left: 8,
+          background: '#1a1a1a',
+          border: '1px solid #3b82f6',
+          borderRadius: 6,
+          padding: '6px 10px',
+          zIndex: 1000,
+          fontSize: 11,
+          fontFamily: 'Inter, sans-serif',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          color: '#aaa',
+        }}>
+          <span style={{ color: '#3b82f6', fontWeight: 600 }}>
+            {selectedIds.length === 1 ? elements[selectedIds[0]]?.name : `${selectedIds.length} selected`}
+          </span>
+          <span style={{ color: '#555' }}>|</span>
+          <span style={{ color: '#666' }}>
+            {selectedIds.length === 1 
+              ? `${Math.round(elements[selectedIds[0]]?.width || 0)} × ${Math.round(elements[selectedIds[0]]?.height || 0)}`
+              : 'Multiple elements'
+            }
+          </span>
+          {selectedIds.length === 1 && (
+            <>
+              <span style={{ color: '#555' }}>|</span>
+              <span style={{ color: '#666' }}>
+                X: {Math.round(elements[selectedIds[0]]?.x || 0)} Y: {Math.round(elements[selectedIds[0]]?.y || 0)}
+              </span>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Canvas content */}
       <div
@@ -683,30 +956,78 @@ export const Canvas: React.FC = () => {
             position: 'absolute',
             left: 200,
             top: 200,
-            width: 420,
+            width: 440,
             padding: 32,
             background: '#1e1e1e',
             border: '1px solid #2a2a2a',
             borderRadius: 8,
             textAlign: 'center',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
           }}>
-            <div style={{ fontSize: 16, color: '#ccc', marginBottom: 12, fontWeight: 500 }}>Canvas is empty</div>
-            <div style={{ fontSize: 12, color: '#666', lineHeight: 1.8, marginBottom: 16 }}>
-              Use the tools on the left to create elements:<br />
-              <span style={{ color: '#888' }}>R</span> Rectangle &nbsp;
-              <span style={{ color: '#888' }}>O</span> Ellipse &nbsp;
-              <span style={{ color: '#888' }}>T</span> Text &nbsp;
-              <span style={{ color: '#888' }}>F</span> Frame
+            <div style={{ fontSize: 18, color: '#ddd', marginBottom: 16, fontWeight: 600 }}>Canvas is empty</div>
+            <div style={{ fontSize: 13, color: '#888', lineHeight: 2, marginBottom: 20 }}>
+              Start creating by using tools or keyboard shortcuts:
+            </div>
+            <div style={{ 
+              display: 'grid', 
+              gridTemplateColumns: '1fr 1fr', 
+              gap: 8,
+              marginBottom: 20,
+              textAlign: 'left',
+            }}>
+              {[
+                { key: 'F', label: 'Frame' },
+                { key: 'R', label: 'Rectangle' },
+                { key: 'O', label: 'Ellipse' },
+                { key: 'T', label: 'Text' },
+                { key: 'L', label: 'Line' },
+                { key: 'V', label: 'Select' },
+              ].map(({ key, label }) => (
+                <div key={key} style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '6px 12px',
+                  background: '#252525',
+                  borderRadius: 4,
+                }}>
+                  <kbd style={{
+                    background: '#333',
+                    color: '#3b82f6',
+                    padding: '2px 8px',
+                    borderRadius: 3,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    fontFamily: 'monospace',
+                    minWidth: 24,
+                    textAlign: 'center',
+                  }}>{key}</kbd>
+                  <span style={{ color: '#aaa', fontSize: 12 }}>{label}</span>
+                </div>
+              ))}
             </div>
             <div style={{
-              padding: '8px 16px',
+              padding: '10px 16px',
               background: '#252525',
-              borderRadius: 4,
-              fontSize: 11,
-              color: '#555',
-              display: 'inline-block',
+              borderRadius: 6,
+              fontSize: 12,
+              color: '#666',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
             }}>
-              <span style={{ color: '#888' }}>Ctrl+K</span> for command menu
+              <span>Press</span>
+              <kbd style={{
+                background: '#333',
+                color: '#3b82f6',
+                padding: '2px 8px',
+                borderRadius: 3,
+                fontSize: 11,
+                fontWeight: 600,
+                fontFamily: 'monospace',
+              }}>Ctrl+K</kbd>
+              <span>for command menu</span>
             </div>
           </div>
         ) : rootIds.map((id) => {
@@ -744,9 +1065,11 @@ export const Canvas: React.FC = () => {
             top: selectionBox.y,
             width: selectionBox.w,
             height: selectionBox.h,
-            border: '1px solid #3b82f6',
-            background: 'rgba(59, 130, 246, 0.08)',
+            border: '1.5px solid #3b82f6',
+            background: 'rgba(59, 130, 246, 0.1)',
+            borderRadius: 2,
             pointerEvents: 'none',
+            boxShadow: '0 0 0 1px rgba(59, 130, 246, 0.2)',
           }} />
         )}
       </div>
