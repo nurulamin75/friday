@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useEditorStore } from '../store';
 import { Icons } from './Icons';
 import { exportToHTML, exportToCSS, exportToJSON, downloadFile } from '../utils/exporter';
+import { showToast } from './Toast';
 
 const ExportButton: React.FC = () => {
   const [open, setOpen] = useState(false);
@@ -20,6 +21,7 @@ const ExportButton: React.FC = () => {
         break;
     }
     setOpen(false);
+    showToast(`Exported as ${format.toUpperCase()}`, 'success');
   };
 
   return (
@@ -92,6 +94,16 @@ export const Toolbar: React.FC = () => {
     }}>
       {/* Left: Logo & Project name */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: 12 }}>
+        <button
+          onClick={() => setView('dashboard')}
+          title="Back to Dashboard"
+          style={{
+            width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'transparent', border: 'none', borderRadius: 4, cursor: 'pointer', color: '#888',
+          }}
+        >
+          <Icons.ArrowLeft size={16} />
+        </button>
         <div style={{
           width: 24, height: 24, background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
           borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center',

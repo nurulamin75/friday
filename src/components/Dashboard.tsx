@@ -4,6 +4,7 @@ import { Icons } from './Icons';
 import { loadProjects, saveProject, deleteProject, type StoredProject } from '../utils/storage';
 import { importWebsite, createDemoWebsite } from '../utils/importer';
 import { v4 as uuid } from 'uuid';
+import { showToast } from './Toast';
 
 export const Dashboard: React.FC = () => {
   const { setView, setCurrentProject, setElements, importLoading, setImportLoading } = useEditorStore();
@@ -53,8 +54,10 @@ export const Dashboard: React.FC = () => {
       setCurrentProject(project);
       setElements(result.elements, result.rootIds);
       setView('editor');
+      showToast('Website imported successfully!', 'success');
     } catch (err: any) {
       setError(err.message || 'Failed to import website');
+      showToast(err.message || 'Failed to import website', 'error');
     } finally {
       setImportLoading(false);
     }
@@ -111,7 +114,33 @@ export const Dashboard: React.FC = () => {
       color: '#fff',
       display: 'flex',
       flexDirection: 'column',
+      position: 'relative',
     }}>
+      {/* Loading overlay */}
+      {importLoading && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0,0,0,0.8)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 10000,
+          gap: 16,
+        }}>
+          <div style={{
+            width: 40,
+            height: 40,
+            border: '3px solid #333',
+            borderTop: '3px solid #6366f1',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite',
+          }} />
+          <div style={{ fontSize: 14, color: '#aaa' }}>Importing website...</div>
+          <div style={{ fontSize: 12, color: '#555' }}>Fetching and parsing HTML/CSS</div>
+        </div>
+      )}
       {/* Header */}
       <header style={{
         padding: '20px 40px',

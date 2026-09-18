@@ -48,3 +48,44 @@ input:focus, select:focus, textarea:focus {
 .panel-transition {
   transition: width 0.2s ease;
 }
+
+/* Toast animation */
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Canvas element hover effect */
+[data-element-id]:hover {
+  outline: none;
+}
+
+/* Prevent text selection during drag */
+.canvas-container {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Smooth scrollbar for panels */
+.layers-panel::-webkit-scrollbar,
+.properties-panel::-webkit-scrollbar {
+  width: 4px;
+}
+
+.layers-panel::-webkit-scrollbar-thumb,
+.properties-panel::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 2px;
+}
+
+/* Loading spinner */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

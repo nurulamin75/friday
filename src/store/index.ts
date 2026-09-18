@@ -68,6 +68,10 @@ interface EditorState {
   paste: () => void;
   duplicateSelection: () => void;
 
+  // Grouping
+  groupSelection: () => void;
+  ungroupSelection: () => void;
+
   // Panels
   layersOpen: boolean;
   propertiesOpen: boolean;
@@ -299,6 +303,102 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   duplicateSelection: () => {
     get().copySelection();
     get().paste();
+  },
+
+  groupSelection: () => {
+    const { selectedIds, elements, rootIds } = get();
+    if (selectedIds.length < 2) return;
+
+    // Calculate bounding box
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    selectedIds.forEach((id) => {
+      const el = elements[id];
+      if (el) {
+        minX = Math.min(minX, el.x);
+        minY = Math.min(minY, el.y);
+        maxX = Math.max(maxX, el.x + el.width);
+        maxY = Math.max(maxY, el.y + el.height);
+      }
+    });
+
+    // Create group
+    const groupId = uuid();
+    const group: DesignElement = {
+      id: groupId,
+      type: 'group',
+      name: 'Group',
+      parentId: null,
+      children: [...selectedIds],
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+      rotation: 0,
+      opacity: 1,
+      visible: true,
+      locked: false,
+      background: 'transparent',
+      border: { width: 0, style: 'solid', color: '#000000' },
+      borderRadius: 0,
+      shadow: null,
+      padding: { top: 0, right: 0, bottom: 0, left: 0 },
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
+      display: 'block',
+      position: 'absolute',
+      typography: null,
+      layout: { display: 'block', flexDirection: 'row', justifyContent: 'flex-start', alignItems: 'flex-start', gap: 0, gridColumns: '', gridRows: '' },
+      content: '',
+      src: '',
+      href: '',
+      tag: 'div',
+      zIndex: 0,
+      overflow: 'visible',
+    };
+
+    // Update children to reference group
+    const newElements = { ...elements, [groupId]: group };
+    selectedIds.forEach((id) => {
+      if (newElements[id]) {
+        newElements[id] = { ...newElements[id], parentId: groupId };
+      }
+    });
+
+    // Update rootIds
+    const newRootIds = [...rootIds.filter((id) => !selectedIds.includes(id)), groupId];
+
+    set({ elements: newElements, rootIds: newRootIds, selectedIds: [groupId] });
+    get().pushHistory();
+  },
+
+  ungroupSelection: () => {
+    const { selectedIds, elements, rootIds } = get();
+    if (selectedIds.length !== 1) return;
+
+    const groupId = selectedIds[0];
+    const group = elements[groupId];
+    if (!group || group.type !== 'group') return;
+
+    const newElements = { ...elements };
+    const newRootIds = [...rootIds];
+
+    // Remove group from rootIds
+    const groupIndex = newRootIds.indexOf(groupId);
+    if (groupIndex >= 0) {
+      newRootIds.splice(groupIndex, 1, ...group.children);
+    }
+
+    // Update children to be root elements
+    group.children.forEach((childId) => {
+      if (newElements[childId]) {
+        newElements[childId] = { ...newElements[childId], parentId: null };
+      }
+    });
+
+    // Delete group
+    delete newElements[groupId];
+
+    set({ elements: newElements, rootIds: newRootIds, selectedIds: group.children });
+    get().pushHistory();
   },
 
   layersOpen: true,

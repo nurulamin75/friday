@@ -1,6 +1,8 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { useEditorStore, createDefaultElement } from '../store';
 import type { DesignElement } from '../types';
+import { AlignmentBar } from './AlignmentBar';
+import { SnapGuides, calculateSnapGuides } from './SnapGuides';
 
 export const Canvas: React.FC = () => {
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -21,6 +23,7 @@ export const Canvas: React.FC = () => {
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [snapGuides, setSnapGuides] = useState<any[]>([]);
 
   const viewportWidths = { desktop: 1440, tablet: 768, mobile: 390 };
   const currentWidth = viewportWidths[viewportMode];
@@ -63,6 +66,11 @@ export const Canvas: React.FC = () => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'c') useEditorStore.getState().copySelection();
       if ((e.metaKey || e.ctrlKey) && e.key === 'v') { e.preventDefault(); useEditorStore.getState().paste(); }
       if ((e.metaKey || e.ctrlKey) && e.key === 'd') { e.preventDefault(); duplicateSelection(); }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'g') {
+        e.preventDefault();
+        if (e.shiftKey) useEditorStore.getState().ungroupSelection();
+        else useEditorStore.getState().groupSelection();
+      }
       if (e.key === 'Escape') { clearSelection(); setEditingTextId(null); }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -152,7 +160,24 @@ export const Canvas: React.FC = () => {
       const pos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
       const dx = pos.x - dragState.startX;
       const dy = pos.y - dragState.startY;
-      updateElement(dragState.id, { x: dragState.elX + dx, y: dragState.elY + dy });
+      
+      const newX = dragState.elX + dx;
+      const newY = dragState.elY + dy;
+      const el = elements[dragState.id];
+      
+      if (el) {
+        // Calculate snap guides
+        const otherElements = Object.values(elements).filter((e) => e.id !== dragState.id && e.visible);
+        const { guides, snappedX, snappedY } = calculateSnapGuides(
+          { x: newX, y: newY, width: el.width, height: el.height },
+          otherElements
+        );
+        
+        setSnapGuides(guides);
+        updateElement(dragState.id, { x: snappedX, y: snappedY });
+      } else {
+        updateElement(dragState.id, { x: newX, y: newY });
+      }
       return;
     }
 
@@ -207,6 +232,7 @@ export const Canvas: React.FC = () => {
     if (dragState) {
       pushHistory();
       setDragState(null);
+      setSnapGuides([]);
     }
     if (resizeState) {
       pushHistory();
@@ -525,6 +551,8 @@ export const Canvas: React.FC = () => {
           transform: `translate(${canvasTransform.x}px, ${canvasTransform.y}px) scale(${canvasTransform.scale})`,
         }}
       >
+        {/* Alignment bar */}
+        {selectedIds.length >= 2 && <AlignmentBar />}
         {/* Viewport frame indicator */}
         <div style={{
           position: 'absolute',
@@ -554,17 +582,30 @@ export const Canvas: React.FC = () => {
             position: 'absolute',
             left: 200,
             top: 200,
-            width: 400,
+            width: 420,
             padding: 32,
             background: '#1e1e1e',
             border: '1px solid #2a2a2a',
             borderRadius: 8,
             textAlign: 'center',
           }}>
-            <div style={{ fontSize: 14, color: '#888', marginBottom: 8 }}>Canvas is empty</div>
-            <div style={{ fontSize: 12, color: '#555', lineHeight: 1.6 }}>
-              Use the toolbar to create shapes, text, and frames.<br />
-              Or go back to import a website.
+            <div style={{ fontSize: 16, color: '#ccc', marginBottom: 12, fontWeight: 500 }}>Canvas is empty</div>
+            <div style={{ fontSize: 12, color: '#666', lineHeight: 1.8, marginBottom: 16 }}>
+              Use the tools on the left to create elements:<br />
+              <span style={{ color: '#888' }}>R</span> Rectangle &nbsp;
+              <span style={{ color: '#888' }}>O</span> Ellipse &nbsp;
+              <span style={{ color: '#888' }}>T</span> Text &nbsp;
+              <span style={{ color: '#888' }}>F</span> Frame
+            </div>
+            <div style={{
+              padding: '8px 16px',
+              background: '#252525',
+              borderRadius: 4,
+              fontSize: 11,
+              color: '#555',
+              display: 'inline-block',
+            }}>
+              <span style={{ color: '#888' }}>Ctrl+K</span> for command menu
             </div>
           </div>
         ) : rootIds.map((id) => {
@@ -575,6 +616,9 @@ export const Canvas: React.FC = () => {
 
         {/* Selection overlays */}
         {renderSelectionOverlay()}
+
+        {/* Snap guides */}
+        <SnapGuides guides={snapGuides} />
 
         {/* Drawing preview */}
         {isDrawing && (
